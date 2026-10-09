@@ -19,12 +19,14 @@ if not DB_PATH.exists():
 
 con = duckdb.connect(str(DB_PATH), read_only=True)
 GEOJSON = json.loads((ROOT / "data" / "raw" / "ar_counties.geojson").read_text())
+PLACE_SHAPES = json.loads((ROOT / "data" / "raw" / "ar_places.geojson").read_text())
 
 app = FastAPI(title="Arkansas Places")
 
 # Columns the table can be sorted by (whitelist: sort is interpolated into SQL).
 SORTABLE = {"name", "kind", "county_name", "population", "pop_change_pct", "density", "pct_white",
-            "pct_black", "pct_hispanic", "pct_65plus", "median_age", "pct_under18", "income", "poverty_rate", "pct_bachelors",
+            "pct_black", "pct_hispanic", "pct_65plus", "median_age", "pct_under18",
+            "median_household_income", "per_capita_income", "poverty_rate", "pct_bachelors",
             "gop_margin"}
 
 
@@ -88,12 +90,33 @@ def compare(ids: str = Query(..., description="comma-separated geoids, up to 3")
     return [place_detail(g) for g in ids.split(",")[:3] if g]
 
 
+def with_stats(features, where, params=()):
+    """Attach each shape's place_summary row as its GeoJSON properties."""
+    stats = {r["geoid"]: r for r in rows(f"SELECT * FROM place_summary WHERE {where}", params)}
+    return [{**f, "properties": stats[f["id"]]} for f in features if f["id"] in stats]
+
+
 @app.get("/api/map")
-def county_map():
-    """County outlines with each county's summary numbers attached."""
-    stats = {r["geoid"]: r for r in rows("SELECT * FROM place_summary WHERE kind = 'county'")}
-    return {"type": "FeatureCollection", "features": [
-        {**f, "properties": stats.get(f["id"], f["properties"])} for f in GEOJSON["features"]]}
+def state_map(layer: str = "counties"):
+    """Outlines with summary numbers attached. layer = counties | places."""
+    if layer == "places":
+        features = with_stats(PLACE_SHAPES["features"], "kind <> 'county'")
+    else:
+        features = with_stats(GEOJSON["features"], "kind = 'county'")
+    return {"type": "FeatureCollection", "features": features}
+
+
+@app.get("/api/map/county/{fips}")
+def county_map(fips: str):
+    """One county's outline plus every city and town that lies at least partly inside it."""
+    county = with_stats(GEOJSON["features"], "geoid = ?", [fips])
+    if not county:
+        raise HTTPException(404, f"no county with FIPS {fips}")
+    name = county[0]["properties"]["name"]
+    places = with_stats(PLACE_SHAPES["features"],
+                        "kind <> 'county' AND (county_fips = ? OR list_contains(string_split(other_counties, ', '), ?))",
+                        [fips, name])
+    return {"county": county[0], "places": places}
 
 
 @app.get("/api/meta")

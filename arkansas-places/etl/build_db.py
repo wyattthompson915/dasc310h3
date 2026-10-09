@@ -41,8 +41,8 @@ CREATE TABLE demographics (
     -- ACS 2019-2023 (table DP05). Race groups are non-Hispanic, so the five shares add to 100.
     pct_white DOUBLE, pct_black DOUBLE, pct_hispanic DOUBLE, pct_asian DOUBLE, pct_other DOUBLE,
     median_age DOUBLE, pct_under18 DOUBLE, pct_65plus DOUBLE,
-    -- counties only, about 2019
-    income INTEGER, poverty_rate DOUBLE, pct_bachelors DOUBLE
+    -- ACS 2019-2023, tables DP03 (income, poverty) and DP02 (education)
+    median_household_income INTEGER, per_capita_income INTEGER, poverty_rate DOUBLE, pct_bachelors DOUBLE
 );
 CREATE TABLE elections (county_fips VARCHAR, year INTEGER, dem INTEGER, gop INTEGER, total INTEGER,
                         PRIMARY KEY (county_fips, year));
@@ -99,7 +99,6 @@ def load_counties(con):
     counties = json.loads((RAW / "ar_counties.json").read_text())
     shapes = {f["id"]: f["properties"] for f in
               json.loads((RAW / "ar_counties.geojson").read_text())["features"]}
-    extras = {}
     for c in counties:
         fips = c["fips"]
         name = shapes[fips]["name"] + " County"
@@ -108,11 +107,10 @@ def load_counties(con):
                      round(c["land_area (km^2)"] * KM2_TO_SQMI, 1)])
         con.executemany("INSERT INTO population VALUES (?,?,?)",
                         [[fips, int(y), int(n)] for y, n in c["population"].items()])
-        extras[name] = [c.get("avg_income"), c.get("poverty-rate"), (c.get("edu") or {}).get("bachelors+")]
-    return extras
+    return len(counties)
 
 
-def load_county_demographics(con, extras):
+def load_county_demographics(con):
     """dp05_counties.csv is the 'transposed' download: one row per measure, four columns per county."""
     with open(CENSUS / "dp05_counties.csv", encoding="utf-8-sig", newline="") as f:
         table = list(csv.reader(f))
@@ -140,9 +138,9 @@ def load_county_demographics(con, extras):
             continue
         name = head.split(",")[0]                       # "St. Francis County"
         v = {k: to_num(body[i][col]) for k, i in want.items()}
-        con.execute("INSERT INTO demographics VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        con.execute("INSERT INTO demographics VALUES (?,?,?,?,?,?,?,?,?,NULL,NULL,NULL,NULL)",
                     [ids[name]] + demo_row(v["total"], v["white"], v["black"], v["hisp"], v["asian"],
-                                           v["median_age"], v["under18"], v["over65"]) + extras[name])
+                                           v["median_age"], v["under18"], v["over65"]))
         n += 1
     return n
 
@@ -192,21 +190,54 @@ def load_place_demographics(con):
             if geoid not in known:                      # unincorporated communities (CDPs)
                 continue
             g = lambda code: to_num(r[f"DP05_{code}E"])
-            con.execute("INSERT INTO demographics VALUES (?,?,?,?,?,?,?,?,?,NULL,NULL,NULL)",
+            con.execute("INSERT INTO demographics VALUES (?,?,?,?,?,?,?,?,?,NULL,NULL,NULL,NULL)",
                         [geoid] + demo_row(g("0001"), g("0082"), g("0083"), g("0076"), g("0085"),
                                            g("0018"), g("0019"), g("0024")))
             n += 1
     return n
 
 
+def load_economics(con):
+    """DP03 (income, poverty) and DP02 (education), for places and counties. Same layout as dp05_places."""
+    known = {r[0] for r in con.execute("SELECT geoid FROM demographics").fetchall()}
+    columns = {
+        "dp03": {"median_household_income": "DP03_0062E", "per_capita_income": "DP03_0088E",
+                 "poverty_rate": "DP03_0128PE"},
+        "dp02": {"pct_bachelors": "DP02_0068PE"},
+    }
+    for table, cols in columns.items():
+        for level in ("places", "counties"):
+            with open(CENSUS / f"{table}_{level}.csv", encoding="utf-8-sig", newline="") as f:
+                reader = csv.DictReader(f)
+                next(reader)
+                for r in reader:
+                    geoid = r["GEO_ID"].split("US")[1]
+                    if geoid in known:
+                        sets = ", ".join(f"{c} = ?" for c in cols)
+                        con.execute(f"UPDATE demographics SET {sets} WHERE geoid = ?",
+                                    [to_num(r[code]) for code in cols.values()] + [geoid])
+
+
+def load_place_geography(con):
+    """Land area and a centre point for each municipality, from the boundary file."""
+    shapes = json.loads((RAW / "ar_places.geojson").read_text())["features"]
+    for f in shapes:
+        p = f["properties"]
+        con.execute("UPDATE places SET land_sqmi = ?, lat = ?, lon = ? WHERE geoid = ?",
+                    [p["land_sqmi"], p["lat"], p["lon"], f["id"]])
+    return len(shapes)
+
+
 def main():
     DB.unlink(missing_ok=True)
     con = duckdb.connect(str(DB))
     con.execute(SCHEMA)
-    extras = load_counties(con)
-    n_county_demo = load_county_demographics(con, extras)
+    n_counties = load_counties(con)
+    n_county_demo = load_county_demographics(con)
     n_places = load_estimates(con)
     n_place_demo = load_place_demographics(con)
+    load_economics(con)
+    n_shapes = load_place_geography(con)
     con.execute(f"INSERT INTO elections SELECT * FROM read_csv('{RAW / 'ar_president.csv'}', "
                 "types={'county_fips': 'VARCHAR'})")
     gh, cb = "https://github.com/", "https://www.census.gov/"
@@ -217,15 +248,20 @@ def main():
          "JsonOfCounties (Census Bureau estimates)", gh + "evangambit/JsonOfCounties"],
         ["Race, ethnicity and age", "counties, cities and towns; 2019-2023 average",
          "Census Bureau, American Community Survey 5-year, table DP05", "https://data.census.gov/table/ACSDP5Y2023.DP05"],
-        ["Income, poverty, education", "counties only; about 2019",
-         "JsonOfCounties (BEA income, Census poverty and education)", gh + "evangambit/JsonOfCounties"],
+        ["Income and poverty", "counties, cities and towns; 2019-2023 average, 2023 dollars",
+         "Census Bureau, American Community Survey 5-year, table DP03", "https://data.census.gov/table/ACSDP5Y2023.DP03"],
+        ["Education", "counties, cities and towns; adults 25 and over, 2019-2023 average",
+         "Census Bureau, American Community Survey 5-year, table DP02", "https://data.census.gov/table/ACSDP5Y2023.DP02"],
+        ["City and town boundaries", "2023 outlines and land area",
+         "Census Bureau cartographic boundary file cb_2023_05_place_500k", cb + "geographies/mapping-files/time-series/geo/cartographic-boundary.html"],
         ["Presidential results", "2008-2024, county level", "tonmcg county-level results",
          gh + "tonmcg/US_County_Level_Election_Results_08-24"],
         ["County boundaries", "generalised outlines", "plotly datasets (Census cartographic boundaries)",
          gh + "plotly/datasets"],
     ])
     con.execute(SUMMARY_VIEW)
-    print(f"{len(extras)} counties ({n_county_demo} with DP05), {n_places} municipalities ({n_place_demo} with DP05)")
+    print(f"{n_counties} counties ({n_county_demo} with DP05), {n_places} municipalities "
+          f"({n_place_demo} with DP05, {n_shapes} with boundaries)")
     print(con.sql("SELECT kind, count(*) n, sum(population) pop FROM place_summary GROUP BY kind ORDER BY kind"))
     con.close()
 

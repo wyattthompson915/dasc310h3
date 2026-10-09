@@ -69,11 +69,48 @@ Class project, built with Claude on Friday 9 October 2026
      - Spot checks: Fayetteville 103,134; Little Rock 204,774; Heber Springs 7,313
      - Browser pass over browse, a city page and a mixed city/county compare: no errors
 
-5. KNOWN GAPS
-   - Income, poverty and education are county-only and from about 2019
-   - No land area or boundaries for municipalities, so density and the map are county-only
+5. HOSTING QUESTION
+   Asked whether to host on GitHub. Answer: the repo can live on GitHub, but GitHub Pages
+   only serves static files and this app needs its Python server. Options discussed: run
+   locally from the repo, deploy the server to a free Python host, or convert to a static
+   site that reads one exported JSON file. No change made yet.
+
+6. CITIES ON THE MAP, AND INCOME / POVERTY / EDUCATION FOR CITIES
+   Files I downloaded and attached:
+     - ACS 2019-2023 table DP03 (income, poverty) for Arkansas places and for counties
+     - ACS 2019-2023 table DP02 (education) for Arkansas places and for counties
+     - cb_2023_05_place_500k.zip: Census boundary shapefile for Arkansas places
+   Changes:
+     - New etl/convert_boundaries.py reads the shapefile (pyshp), keeps the 500
+       incorporated places, rounds coordinates to 4 decimals and writes
+       data/raw/ar_places.geojson (584 KB). Land area and a centre point come from it.
+     - build_db.py: income, poverty and education now come from DP03/DP02 for every
+       county and municipality, replacing the 2019 county-only figures. Income changed
+       from one "income per person" number to median household income plus per-capita
+       income.
+     - API: /api/map takes layer=counties|places; new /api/map/county/{fips}.
+     - Browse map: Counties / Cities & towns switch, zoom (buttons or scroll) and drag
+       to pan. In city view every place also gets a small dot, because many towns are
+       smaller than a pixel at statewide zoom. Presidential margin is hidden in city
+       view since votes are not reported by city.
+     - County pages show a mini-map of the county's cities; city pages show the city
+       highlighted inside its county.
+     - Density and income tiles now appear for cities too.
+   Checks:
+     - All 500 municipalities matched a boundary; all have land area and a centre point
+     - Spot checks against the source rows: Heber Springs $49,917 median household
+       income, 15.2% poverty, 15.1% bachelor's; Fayetteville $59,074 / 21.4% / 49.8%
+     - Browser test: switched to city view, zoomed, dragged (drag does not open a
+       place), clicked a city (opens it), came back (view kept), opened a city page, a
+       county page and a compare page: no errors
+
+7. KNOWN GAPS
+   - Median household income is withheld by the Census Bureau for 32 very small towns
+   - County outlines are coarser than city outlines, so edges do not line up exactly
+   - No place-name labels on the map; names appear on hover
+   - Map zoom was tested with a mouse only, not on a touch screen
    - County population has a small break between the 2019 and 2020 estimate series
    - ACS figures for very small towns carry large sampling error; Victoria (pop. 18) has
-     no demographic data and Gilbert has no median age
+     no survey data and Gilbert has no median age or income
    - 2012 and 2016 vote totals are about 1% under certified counts
    - Not tested: running on Windows/macOS, or on Python versions other than 3.13

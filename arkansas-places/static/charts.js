@@ -104,59 +104,162 @@ function lineChart(container, series, opts = {}) {
   });
 }
 
-/* ---- County map ---- */
+/* ---- Maps ---- */
 const BLUES = ["#cde2fb", "#86b6ef", "#3987e5", "#1c5cab", "#0d366b"];
 const MAP_METRICS = {
   population:     { label: "Population", fmt: v => v.toLocaleString(), scale: "quantile" },
-  pop_change_pct: { label: "Population change", fmt: v => (v > 0 ? "+" : "") + v + "%",
+  pop_change_pct: { label: "Population change, 2020–24", fmt: v => (v > 0 ? "+" : "") + v + "%",
                     bins: [-10, -5, 0, 5, 10],
                     colors: ["#b84a1e", "#eb6834", "#f6c3ad", "#b7d3f6", "#3987e5", "#184f95"],
                     binLabels: ["below −10%", "−10 to −5%", "−5 to 0%", "0 to +5%", "+5 to +10%", "above +10%"] },
   gop_margin:     { label: "Presidential margin", fmt: v => (v >= 0 ? "R+" : "D+") + Math.abs(v).toFixed(1),
+                    countyOnly: true,              // votes are not reported by city
                     bins: [-20, 0, 20, 40, 60],
                     colors: ["#1c5cab", "#86b6ef", "#f6c7c6", "#ec8f8e", "#e34948", "#a82a2a"],
                     binLabels: ["D+20 or more", "D+0 to 20", "R+0 to 20", "R+20 to 40", "R+40 to 60", "R+60 or more"] },
-  density:        { label: "People per sq. mile", fmt: v => v.toLocaleString(), scale: "quantile" },
+  density:        { label: "People per sq. mile", fmt: v => Math.round(v).toLocaleString(), scale: "quantile" },
   median_age:     { label: "Median age", fmt: v => v.toFixed(1), scale: "quantile" },
   pct_65plus:     { label: "Age 65 and over", fmt: v => v + "%", scale: "quantile" },
   pct_black:      { label: "Black", fmt: v => v + "%", scale: "quantile" },
   pct_hispanic:   { label: "Hispanic", fmt: v => v + "%", scale: "quantile" },
-  income:         { label: "Income per person (2019)", fmt: v => "$" + v.toLocaleString(), scale: "quantile" },
-  poverty_rate:   { label: "Poverty rate (2019)", fmt: v => v + "%", scale: "quantile" },
-  pct_bachelors:  { label: "Bachelor's degree or higher (2019)", fmt: v => v + "%", scale: "quantile" },
+  median_household_income: { label: "Median household income", fmt: v => "$" + v.toLocaleString(), scale: "quantile" },
+  poverty_rate:   { label: "Poverty rate", fmt: v => v + "%", scale: "quantile" },
+  pct_bachelors:  { label: "Bachelor's degree or higher", fmt: v => v + "%", scale: "quantile" },
 };
 
-function drawMap(container, legendEl, geo, metricKey, onClick) {
-  const metric = MAP_METRICS[metricKey];
-  const values = geo.features.map(f => f.properties[metricKey]).filter(v => v != null).sort((a, b) => a - b);
-  let bins = metric.bins, colors = metric.colors, labels = metric.binLabels;
-  if (metric.scale === "quantile") {           // five equal-count groups
-    bins = [1, 2, 3, 4].map(i => values[Math.floor(values.length * i / 5)]);
+const ringsOf = g => g.type === "Polygon" ? [g.coordinates] : g.coordinates;
+
+/* Flat projection fitted to `features`, squeezed east-west by cos(latitude) so shapes look right. */
+function fitProjection(features, W, pad = 0) {
+  const k = Math.cos(34.8 * Math.PI / 180);
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const f of features) for (const poly of ringsOf(f.geometry)) for (const [lon, lat] of poly[0]) {
+    minX = Math.min(minX, lon * k); maxX = Math.max(maxX, lon * k);
+    minY = Math.min(minY, lat); maxY = Math.max(maxY, lat);
+  }
+  const s = (W - 2 * pad) / (maxX - minX), H = (maxY - minY) * s + 2 * pad;
+  const xy = ([lon, lat]) => [(lon * k - minX) * s + pad, (maxY - lat) * s + pad];
+  const path = g => ringsOf(g).map(poly => poly.map(r =>
+    "M" + r.map(p => xy(p).map(n => n.toFixed(1)).join(",")).join("L") + "Z").join("")).join("");
+  return { W, H, xy, path };
+}
+
+/* Colour scale for one metric over a set of values: fixed bins, or five equal-count groups. */
+function colorScale(metric, values) {
+  let { bins, colors, binLabels: labels } = metric;
+  if (metric.scale === "quantile") {
+    const v = values.filter(x => x != null).sort((a, b) => a - b);
+    bins = [1, 2, 3, 4].map(i => v[Math.floor(v.length * i / 5)]);
     colors = BLUES;
-    const edges = [values[0], ...bins, values[values.length - 1]];
+    const edges = [v[0], ...bins, v[v.length - 1]];
     labels = colors.map((_, i) => `${metric.fmt(edges[i])} – ${metric.fmt(edges[i + 1])}`);
   }
-  const colorFor = v => v == null ? "var(--grid)" : colors[bins.filter(b => v >= b).length];
+  return { colors, labels, colorFor: x => x == null ? "var(--nodata)" : colors[bins.filter(b => x >= b).length] };
+}
 
-  // Flat projection, squeezed east-west by cos(latitude) so shapes look right.
-  const k = Math.cos(34.8 * Math.PI / 180);
-  const rings = g => g.type === "Polygon" ? [g.coordinates] : g.coordinates;
-  const pts = geo.features.flatMap(f => rings(f.geometry).flat(2));
-  const minX = Math.min(...pts.map(p => p[0] * k)), maxX = Math.max(...pts.map(p => p[0] * k));
-  const minY = Math.min(...pts.map(p => p[1])), maxY = Math.max(...pts.map(p => p[1]));
-  const W = 400, s = W / (maxX - minX), H = (maxY - minY) * s;
-  const proj = ([lon, lat]) => `${((lon * k - minX) * s).toFixed(1)},${((maxY - lat) * s).toFixed(1)}`;
+/* State map. opts: {counties, places, layer: "counties"|"places", metricKey, view, onClick}
+   `view` ({k, x, y}) is kept by the caller so zoom survives a redraw. */
+function drawMap(container, legendEl, opts) {
+  const { counties, places, layer, metricKey, view, onClick } = opts;
+  const metric = MAP_METRICS[metricKey];
+  const showPlaces = layer === "places";
+  const data = showPlaces ? places : counties;
+  const scale = colorScale(metric, data.features.map(f => f.properties[metricKey]));
+  const P = fitProjection(counties.features, 400);
 
-  container.innerHTML = "";
-  const svg = el("svg", { viewBox: `-2 -2 ${W + 4} ${H + 4}`, role: "img" }, container);
-  for (const f of geo.features) {
-    const d = rings(f.geometry).map(poly => poly.map(r => "M" + r.map(proj).join("L") + "Z").join("")).join("");
-    const p = f.properties, v = p[metricKey];
-    const path = el("path", { d, fill: colorFor(v), "data-id": f.id }, svg);
-    path.addEventListener("mousemove", evt => showTip(
-      `<b>${p.name}</b><div class="row"><span>${metric.label}</span><span>${v == null ? "n/a" : metric.fmt(v)}</span></div>`, evt));
+  container.innerHTML = `<div class="zoom"><button data-z="in" aria-label="Zoom in">+</button>
+    <button data-z="out" aria-label="Zoom out">−</button><button data-z="reset" aria-label="Reset zoom">⟲</button></div>`;
+  const svg = el("svg", { role: "img" }, container);
+  const tipFor = (p, extra = "") => evt => showTip(
+    `<b>${p.name}</b>${extra}<div class="row"><span>${metric.label}</span><span>${
+      p[metricKey] == null ? "no data" : metric.fmt(p[metricKey])}</span></div>`, evt);
+
+  for (const f of counties.features) {
+    const p = f.properties;
+    const path = el("path", { d: P.path(f.geometry), class: showPlaces ? "bg" : "area",
+                              fill: showPlaces ? "var(--mapbg)" : scale.colorFor(p[metricKey]) }, svg);
+    if (showPlaces) continue;
+    path.addEventListener("mousemove", tipFor(p));
     path.addEventListener("mouseleave", hideTip);
-    path.addEventListener("click", () => { hideTip(); onClick(f.id); });
+    path.addEventListener("click", () => onClick(f.id));
   }
-  legendEl.innerHTML = colors.map((c, i) => `<span><i style="background:${c}"></i>${labels[i]}</span>`).join("");
+  const dots = [];
+  if (showPlaces) {
+    // Biggest first so small towns are drawn on top and stay clickable. Every place also gets
+    // a dot at its centre, because many towns are smaller than a pixel at statewide zoom.
+    const sorted = [...places.features].sort((a, b) => (b.properties.land_sqmi || 0) - (a.properties.land_sqmi || 0));
+    for (const f of sorted) {
+      const p = f.properties, fill = scale.colorFor(p[metricKey]);
+      const g = el("g", { class: "place" }, svg);
+      const [cx, cy] = P.xy([p.lon, p.lat]);
+      dots.push(el("circle", { cx, cy, fill }, g));
+      el("path", { d: P.path(f.geometry), fill }, g);
+      g.addEventListener("mousemove", tipFor(p, `<div class="muted">${p.kind} in ${p.county_name}</div>`));
+      g.addEventListener("mouseleave", hideTip);
+      g.addEventListener("click", () => onClick(f.id));
+    }
+  }
+  legendEl.innerHTML = scale.colors.map((c, i) => `<span><i style="background:${c}"></i>${scale.labels[i]}</span>`).join("")
+    + (showPlaces ? `<span><i style="background:var(--nodata)"></i>no data</span>` : "");
+
+  // ---- zoom and pan: change the viewBox, never the shapes ----
+  const apply = () => {
+    view.k = Math.max(1, Math.min(40, view.k));
+    const w = P.W / view.k, h = P.H / view.k;
+    view.x = Math.max(0, Math.min(P.W - w, view.x));
+    view.y = Math.max(0, Math.min(P.H - h, view.y));
+    svg.setAttribute("viewBox", `${view.x - 2 / view.k} ${view.y - 2 / view.k} ${w + 4 / view.k} ${h + 4 / view.k}`);
+    dots.forEach(d => d.setAttribute("r", 2.2 / view.k));
+    svg.style.cursor = view.k > 1 ? "grab" : "";
+  };
+  const zoomAt = (factor, fx = 0.5, fy = 0.5) => {     // fx, fy: where in the frame to hold still (0-1)
+    const w = P.W / view.k, h = P.H / view.k, k = Math.max(1, Math.min(40, view.k * factor));
+    view.x += (w - P.W / k) * fx; view.y += (h - P.H / k) * fy; view.k = k;
+    apply();
+  };
+  container.querySelector(".zoom").onclick = e => {
+    const z = e.target.dataset.z;
+    if (z === "reset") { view.k = 1; view.x = view.y = 0; apply(); }
+    else if (z) zoomAt(z === "in" ? 2 : 0.5);
+  };
+  svg.addEventListener("wheel", e => {
+    e.preventDefault();
+    const b = svg.getBoundingClientRect();
+    zoomAt(e.deltaY < 0 ? 1.3 : 1 / 1.3, (e.clientX - b.left) / b.width, (e.clientY - b.top) / b.height);
+  }, { passive: false });
+  let drag = null;
+  svg.addEventListener("pointerdown", e => { drag = { px: e.clientX, py: e.clientY, x: view.x, y: view.y, moved: false }; });
+  addEventListener("pointermove", e => {
+    if (!drag || !svg.isConnected) return;
+    const b = svg.getBoundingClientRect(), dx = e.clientX - drag.px, dy = e.clientY - drag.py;
+    if (Math.abs(dx) + Math.abs(dy) > 4) drag.moved = true;
+    if (!drag.moved) return;
+    hideTip();
+    view.x = drag.x - dx / b.width * P.W / view.k; view.y = drag.y - dy / b.height * P.H / view.k;
+    apply();
+  });
+  addEventListener("pointerup", () => { setTimeout(() => drag = null, 0); });
+  // A drag should not count as a click on whatever shape the pointer ends over.
+  svg.addEventListener("click", e => { if (drag?.moved) e.stopPropagation(); }, true);
+  apply();
+}
+
+/* Small map of one county with its cities and towns. data: {county, places} */
+function drawLocator(container, data, highlightId, onClick) {
+  const P = fitProjection([data.county], 400, 6);
+  container.innerHTML = "";
+  const svg = el("svg", { viewBox: `0 0 ${P.W} ${P.H}`, role: "img" }, container);
+  el("path", { d: P.path(data.county.geometry), class: "county" }, svg);
+  const sorted = [...data.places].sort((a, b) => (b.properties.land_sqmi || 0) - (a.properties.land_sqmi || 0));
+  for (const f of sorted) {
+    const p = f.properties;
+    const g = el("g", { class: "place" + (f.id === highlightId ? " on" : "") }, svg);
+    const [cx, cy] = P.xy([p.lon, p.lat]);
+    el("circle", { cx, cy, r: 3 }, g);
+    el("path", { d: P.path(f.geometry) }, g);
+    g.addEventListener("mousemove", evt => showTip(
+      `<b>${p.name}</b><div class="row"><span>Population</span><span>${(p.population ?? 0).toLocaleString()}</span></div>`, evt));
+    g.addEventListener("mouseleave", hideTip);
+    g.addEventListener("click", () => { hideTip(); onClick(f.id); });
+  }
 }

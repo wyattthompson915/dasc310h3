@@ -13,6 +13,8 @@ Open http://127.0.0.1:8000. Interactive API docs are at /docs.
 ## How it fits together
 
     etl/fetch_raw.py   downloads the public source files, keeps Arkansas rows -> data/raw/
+    etl/convert_boundaries.py  turns the Census city boundary shapefile into data/raw/ar_places.geojson
+                       (only needed if you replace the shapefile; requires `pip install pyshp`)
     etl/build_db.py    loads data/raw/ (incl. the Census downloads in data/raw/census/) into data/arkansas.duckdb
     app/main.py        FastAPI: reads the DuckDB file and serves JSON plus the static site
     static/            index.html, style.css, charts.js (SVG line chart + map), app.js (views)
@@ -36,7 +38,9 @@ To rebuild the database: `python etl/build_db.py`.
 | `GET /api/places?q=&kind=&county=&sort=&order=` | filtered, sorted list |
 | `GET /api/places/{geoid}` | one place with its population series and election results |
 | `GET /api/compare?ids=05143,05119` | up to three places in full |
-| `GET /api/map` | county outlines (GeoJSON) with summary numbers attached |
+| `GET /api/map?layer=counties` | county outlines (GeoJSON) with summary numbers attached |
+| `GET /api/map?layer=places` | city and town outlines with summary numbers attached |
+| `GET /api/map/county/{fips}` | one county's outline plus the cities and towns in it |
 | `GET /api/meta` | data sources and row counts |
 
 ## Data notes
@@ -50,11 +54,15 @@ To rebuild the database: `python etl/build_db.py`.
   (`dp05_places.csv`, `dp05_counties.csv`). These are survey averages with real sampling
   error, which is large for the smallest towns. Race groups are non-Hispanic so the five
   shares add to 100. One town (Victoria) has no surveyed residents and shows blanks.
-- **Income, poverty, education**: counties only, about 2019, from JsonOfCounties. Not
-  available for cities and towns yet (ACS tables DP03 and DP02 would add them).
+- **Income, poverty, education**: ACS 2019-2023, tables DP03 and DP02, for counties and
+  municipalities (`dp03_*.csv`, `dp02_*.csv`). Income is median household income and
+  per-capita income in 2023 dollars; education is adults 25 and over. The Census Bureau
+  withholds median household income for 32 very small towns, which show a dash.
 - **Presidential results, 2008-2024**: tonmcg county-level dataset. Its 2012 and 2016
   Arkansas totals run about 1% below the certified statewide counts.
 - Election results are only published by county, so a city or town shows the results of the
   county where most of its residents live. 19 municipalities cross a county line.
-- Cities and towns have no land area in these files, so density is county-only.
+- **City and town boundaries and land area**: Census cartographic boundary file
+  `cb_2023_05_place_500k`. County outlines come from a coarser file, so on the county
+  mini-maps a city edge can sit slightly outside the county line.
 - Unincorporated communities (Census "CDPs") are left out.

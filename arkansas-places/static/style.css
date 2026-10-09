@@ -6,6 +6,7 @@
   --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a;      /* compare slots, fixed order */
   --dem: #2a78d6; --gop: #e34948;
   --up: #006300; --down: #b3261e;
+  --mapbg: #ecebe6; --nodata: #c9c8c1;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -16,6 +17,7 @@
     --s1: #3987e5; --s2: #d95926; --s3: #199e70;
     --dem: #3987e5; --gop: #e66767;
     --up: #0ca30c; --down: #e66767;
+    --mapbg: #262624; --nodata: #55544f;
   }
 }
 * { box-sizing: border-box; }
@@ -42,7 +44,7 @@ main { max-width: 1240px; margin: 0 auto; padding: 20px 24px 60px; }
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; }
 .grid { display: grid; gap: 16px; }
 .grid > * { min-width: 0; }
-.browse { grid-template-columns: 380px 1fr; align-items: start; }
+.browse { grid-template-columns: 440px 1fr; align-items: start; }
 .two { grid-template-columns: 1fr 1fr; }
 @media (max-width: 900px) { .browse, .two { grid-template-columns: 1fr; } }
 
@@ -74,9 +76,24 @@ td.name { font-weight: 600; }
 .up { color: var(--up); } .down { color: var(--down); }
 .count { color: var(--muted); font-size: 13px; margin-left: auto; }
 
-.map svg { width: 100%; height: auto; display: block; }
-.map path { stroke: var(--surface); stroke-width: 1.5; cursor: pointer; }
-.map path:hover, .map path.hl { stroke: var(--ink); stroke-width: 2; }
+.mapframe { position: relative; }
+.map svg { width: 100%; height: auto; display: block; touch-action: none; user-select: none; }
+.map path, .map circle { vector-effect: non-scaling-stroke; }
+.map path.area { stroke: var(--surface); stroke-width: 1.5; cursor: pointer; }
+.map path.area:hover { stroke: var(--ink); stroke-width: 2; }
+.map path.bg { stroke: var(--axis); stroke-width: 1; }
+.map .place { cursor: pointer; }
+.map .place path { stroke: var(--surface); stroke-width: .6; }
+.map .place:hover path, .map .place:hover circle { stroke: var(--ink); stroke-width: 1.5; }
+.zoom { position: absolute; top: 4px; right: 4px; display: flex; flex-direction: column; gap: 4px; z-index: 2; }
+.zoom button { width: 30px; height: 30px; padding: 0; line-height: 1; font-size: 16px; }
+.locator { max-width: 360px; margin: 0 auto 12px; }
+.locator svg { width: 100%; height: auto; display: block; }
+.locator .county { fill: var(--mapbg); stroke: var(--axis); stroke-width: 1.5; }
+.locator .place { cursor: pointer; }
+.locator .place path, .locator .place circle { fill: var(--s1); fill-opacity: .45; stroke: var(--surface); stroke-width: .6; }
+.locator .place.on path, .locator .place.on circle { fill: var(--ink); fill-opacity: 1; }
+.locator .place:hover path, .locator .place:hover circle { stroke: var(--ink); stroke-width: 1.5; }
 .legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--ink-2); margin-top: 8px; }
 .legend span { display: inline-flex; align-items: center; gap: 5px; }
 .legend i { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }

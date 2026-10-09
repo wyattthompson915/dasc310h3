@@ -34,12 +34,13 @@ function updateNav() {
 }
 
 /* ---- Browse: map + table ---- */
-const browse = { q: "", kind: "", county: "", sort: "population", order: "desc", metric: "population" };
+const browse = { q: "", kind: "", county: "", sort: "population", order: "desc", metric: "population",
+                 layer: "counties", view: { k: 1, x: 0, y: 0 }, placesGeo: null };
 const COLUMNS = [
   ["name", "Name", "left"], ["kind", "Type", "left"], ["county_name", "County", "left"],
   ["population", "Population"], ["pop_change_pct", "Change"], ["median_age", "Median age"],
   ["pct_white", "White"], ["pct_black", "Black"], ["pct_hispanic", "Hispanic"], ["pct_65plus", "65+"],
-  ["income", "Income"], ["poverty_rate", "Poverty"], ["pct_bachelors", "Bachelor's+"],
+  ["median_household_income", "Household income"], ["poverty_rate", "Poverty"], ["pct_bachelors", "Bachelor's+"],
   ["gop_margin", "Pres. margin"],
 ];
 
@@ -48,11 +49,13 @@ async function renderBrowse() {
   view.innerHTML = `
     <div class="grid browse">
       <section class="card map">
-        <h2>Counties</h2>
-        <p class="sub">Click a county to open it.</p>
-        <div class="controls"><select id="metric" aria-label="Map colour">${Object.entries(MAP_METRICS)
-          .map(([k, m]) => `<option value="${k}">${m.label}</option>`).join("")}</select></div>
-        <div id="map"></div><div id="legend" class="legend"></div>
+        <h2>Map</h2>
+        <p class="sub">Click a place to open it. Scroll or use the buttons to zoom, drag to move.</p>
+        <div class="controls">
+          <div class="seg" id="layer"><button data-layer="counties">Counties</button><button data-layer="places">Cities &amp; towns</button></div>
+          <select id="metric" aria-label="Map colour"></select>
+        </div>
+        <div id="map" class="mapframe"></div><div id="legend" class="legend"></div>
       </section>
       <section class="card">
         <div class="controls">
@@ -70,10 +73,22 @@ async function renderBrowse() {
     </div>`;
 
   const metricSel = document.getElementById("metric");
-  metricSel.value = browse.metric;
-  const paint = () => drawMap(document.getElementById("map"), document.getElementById("legend"),
-    geo, browse.metric, id => location.hash = "#/place/" + id);
+  const paint = async () => {
+    const cities = browse.layer === "places";
+    if (cities && !browse.placesGeo) browse.placesGeo = await api("map?layer=places");   // fetched once, on first use
+    if (cities && MAP_METRICS[browse.metric].countyOnly) browse.metric = "population";
+    if (!document.getElementById("map")) return;
+    metricSel.innerHTML = Object.entries(MAP_METRICS).filter(([, m]) => !(cities && m.countyOnly))
+      .map(([k, m]) => `<option value="${k}">${m.label}</option>`).join("");
+    metricSel.value = browse.metric;
+    document.querySelectorAll("#layer button").forEach(b => b.classList.toggle("on", b.dataset.layer === browse.layer));
+    drawMap(document.getElementById("map"), document.getElementById("legend"), {
+      counties: geo, places: browse.placesGeo, layer: browse.layer, metricKey: browse.metric, view: browse.view,
+      onClick: id => { hideTip(); location.hash = "#/place/" + id; },
+    });
+  };
   metricSel.onchange = () => { browse.metric = metricSel.value; paint(); };
+  document.querySelectorAll("#layer button").forEach(b => b.onclick = () => { browse.layer = b.dataset.layer; paint(); });
   paint();
 
   const countySel = document.getElementById("county");
@@ -120,7 +135,7 @@ async function loadTable() {
       <td class="${trend(p.pop_change_pct)}">${signed(p.pop_change_pct)}</td>
       <td>${p.median_age == null ? "–" : p.median_age.toFixed(1)}</td>
       <td>${pctFmt(p.pct_white)}</td><td>${pctFmt(p.pct_black)}</td><td>${pctFmt(p.pct_hispanic)}</td><td>${pctFmt(p.pct_65plus)}</td>
-      <td>${money(p.income)}</td><td>${pctFmt(p.poverty_rate)}</td><td>${pctFmt(p.pct_bachelors)}</td>
+      <td>${money(p.median_household_income)}</td><td>${pctFmt(p.poverty_rate)}</td><td>${pctFmt(p.pct_bachelors)}</td>
       <td>${margin(p.gop_margin)}</td>
     </tr>`).join("") : `<tr><td colspan="${COLUMNS.length + 1}" class="empty">${
       kind === "municipality" && !q && !county ? "No cities or towns are loaded yet." : "Nothing matches those filters."}</td></tr>`;
@@ -159,10 +174,10 @@ async function renderPlace(id) {
         <div class="note">from ${num(p.base_population)}</div></div>
       <div class="card tile"><div class="label">Median age</div><div class="value">${p.median_age == null ? "–" : p.median_age.toFixed(1)}</div>
         <div class="note">${pctFmt(p.pct_65plus)} are 65 or older</div></div>
-      ${isCounty ? `<div class="card tile"><div class="label">People per sq. mile</div><div class="value">${num(p.density)}</div>
-        <div class="note">${num(p.land_sqmi)} sq. mi of land</div></div>
-      <div class="card tile"><div class="label">Income per person</div><div class="value">${money(p.income)}</div>
-        <div class="note">2019; ${pctFmt(p.poverty_rate)} in poverty</div></div>` : ""}
+      <div class="card tile"><div class="label">Median household income</div><div class="value">${money(p.median_household_income)}</div>
+        <div class="note">${money(p.per_capita_income)} per person</div></div>
+      <div class="card tile"><div class="label">People per sq. mile</div><div class="value">${num(p.density)}</div>
+        <div class="note">${p.land_sqmi == null ? "" : (p.land_sqmi < 10 ? p.land_sqmi.toFixed(1) : num(p.land_sqmi)) + " sq. mi of land"}</div></div>
       <div class="card tile"><div class="label">${last ? last.year : ""} presidential margin</div>
         <div class="value">${margin(p.gop_margin)}</div>
         <div class="note">${isCounty ? "" : esc(p.county_name) + " result"}</div></div>
@@ -176,18 +191,22 @@ async function renderPlace(id) {
         ${barList([["White", p.pct_white], ["Black", p.pct_black], ["Hispanic or Latino", p.pct_hispanic],
                    ["Asian", p.pct_asian], ["Other or multiple", p.pct_other]])}
         <p class="sub" style="margin:10px 0 0">Race groups exclude Hispanic residents, so the bars add to 100%.</p></section>
-      <section class="card"><h2>${isCounty ? "Age, education and poverty" : "Age"}</h2>
-        <p class="sub">Share of residents${isCounty ? "; education and poverty are from about 2019" : ", 2019–2023 survey average"}</p>
+      <section class="card"><h2>Age, education and poverty</h2>
+        <p class="sub">Share of residents, 2019–2023 survey average</p>
         ${barList([["Under 18", p.pct_under18], ["65 and over", p.pct_65plus],
-                   ...(isCounty ? [["Bachelor's or higher (25+)", p.pct_bachelors], ["Below poverty line", p.poverty_rate]] : [])])}</section>
+                   ["Bachelor's or higher (age 25+)", p.pct_bachelors], ["Below poverty line", p.poverty_rate]])}</section>
       <section class="card"><h2>Presidential results by year</h2><p class="sub">Votes cast</p>
         <div class="table-wrap"><table><thead><tr><th class="left">Year</th><th>Republican</th><th>Democratic</th><th>Total</th><th>Margin</th></tr></thead>
         <tbody>${p.elections.map(e => `<tr><td class="left">${e.year}</td><td>${num(e.gop)} (${pctFmt(e.gop_pct)})</td>
           <td>${num(e.dem)} (${pctFmt(e.dem_pct)})</td><td>${num(e.total)}</td><td>${margin(e.gop_margin)}</td></tr>`).join("")}</tbody></table></div></section>
-      ${isCounty ? `<section class="card"><h2>Cities and towns</h2><p class="sub">Municipalities in this county</p>
+      ${isCounty ? `<section class="card"><h2>Cities and towns</h2>
+        <p class="sub">Municipalities based in this county; the map also shows any that cross in from a neighbour</p>
+        <div id="locator" class="locator"></div>
         ${p.municipalities.length ? `<ul class="munis">${p.municipalities.map(m =>
           `<li><a href="#/place/${m.geoid}">${esc(m.name)}</a> <span class="muted">${num(m.population)}</span></li>`).join("")}</ul>`
-          : '<p class="muted">No cities or towns are loaded yet.</p>'}</section>` : ""}
+          : '<p class="muted">No incorporated cities or towns.</p>'}</section>`
+      : `<section class="card"><h2>Location</h2><p class="sub">${esc(p.name)} within ${esc(p.county_name)}; click another place to open it</p>
+        <div id="locator" class="locator"></div></section>`}
     </div>`;
 
   lineChart(document.getElementById("pop"),
@@ -196,6 +215,11 @@ async function renderPlace(id) {
     { name: "Rep.", color: "var(--gop)", points: p.elections.map(e => ({ x: e.year, y: e.gop_pct })) },
     { name: "Dem.", color: "var(--dem)", points: p.elections.map(e => ({ x: e.year, y: e.dem_pct })) },
   ], { format: v => v.toFixed(0) + "%", tipFormat: v => v.toFixed(1) + "%" });
+
+  api("map/county/" + p.county_fips).then(data => {
+    const box = document.getElementById("locator");
+    if (box) drawLocator(box, data, id, pid => location.hash = "#/place/" + pid);
+  });
 
   const btn = document.getElementById("cmp");
   const label = () => btn.textContent = compare.has(id) ? "Remove from compare" : "Add to compare";
@@ -233,8 +257,8 @@ async function renderCompare() {
       ${row("Hispanic or Latino", p => pctFmt(p.pct_hispanic))}${row("Asian", p => pctFmt(p.pct_asian))}
       ${row("Other or multiple races", p => pctFmt(p.pct_other))}
       ${row("Under 18", p => pctFmt(p.pct_under18))}${row("65 and over", p => pctFmt(p.pct_65plus))}
-      ${row("Income per person (2019, counties)", p => money(p.income))}${row("Poverty rate (2019, counties)", p => pctFmt(p.poverty_rate))}
-      ${row("Bachelor's or higher (2019, counties)", p => pctFmt(p.pct_bachelors))}
+      ${row("Median household income", p => money(p.median_household_income))}${row("Income per person", p => money(p.per_capita_income))}
+      ${row("Poverty rate", p => pctFmt(p.poverty_rate))}${row("Bachelor's or higher (age 25+)", p => pctFmt(p.pct_bachelors))}
       ${row("Latest presidential margin", p => `${margin(p.gop_margin)} <span class="muted">(${p.election_year ?? ""}${p.kind === "county" ? "" : ", county"})</span>`)}
       </tbody></table></div></section>`;
 
