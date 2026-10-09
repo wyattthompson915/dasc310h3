@@ -10,6 +10,17 @@ population, population change, demographics and presidential voting history.
 
 Open http://127.0.0.1:8000. Interactive API docs are at /docs.
 
+## Deploy to Render (free)
+
+1. Push this folder to a GitHub repository (include `data/arkansas.duckdb` and `data/raw/`).
+2. On render.com: New > Web Service, connect the repository.
+3. Settings: Language **Python 3**, Build Command `pip install -r requirements.txt`,
+   Start Command `uvicorn app.main:app --host 0.0.0.0 --port $PORT`, Instance Type **Free**.
+   (`render.yaml` holds the same settings if you use New > Blueprint instead.)
+
+The free instance sleeps after 15 minutes without visitors and takes about a minute to wake.
+Every push to the repository redeploys the site.
+
 ## How it fits together
 
     etl/fetch_raw.py   downloads the public source files, keeps Arkansas rows -> data/raw/
